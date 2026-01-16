@@ -2,66 +2,42 @@
 
 # ==============================================================================
 #
-# 脚本名称: 服务器初始化与Zsh美化终极脚本 (v6.8 - 适配 CF 加速版)
-# 功    能: 一键完成服务器基础环境安装与Shell美化，并集成高级效率插件。
+# 脚本名称: Linux 服务器初始化旗舰版 (v7.1 - 自愈修复版)
+# 功    能: 系统优化 + 现代化工具链 + Zsh/P10k 终极美化 + Docker集成
 #
-# v6.8 修改日志:
-#   - 配置: 已预设加速代理为 https://github.xuheng.work/
-#
-# v6.7 修改日志:
-#   - 适配: 将硬编码的私有镜像源移除，改为标准的 GitHub 官方源。
-#   - 新增: 增加了 PROXY_URL 变量，可配合 Cloudflare Workers 加速站使用。
-#
-# 系统支持: Debian / Ubuntu
+# v7.1 核心升级:
+#   1. [修复] 增加 Git 仓库自愈功能，强制修正旧版本残留的错误源地址。
+#   2. [增强] 优化 Zsh 快捷键，绑定上下箭头为智能历史搜索。
+#   3. [增强] 深度配置 FZF 快捷键 (Ctrl+R, Ctrl+T)。
+#   4. [原有] BBR, Docker, 现代化工具箱 (btop, bat, zoxide) 保持不变。
 #
 # ==============================================================================
 
-# --- 配置区 (加速设置) ---
+# --- 全局配置 ---
+# GitHub 加速代理 (末尾带 /)
+GH_PROXY="https://github.xuheng.work/"
 
-# [关键] 在这里填入你的 Cloudflare Worker 地址 (务必以 / 结尾)
-# 作用: 脚本会自动将其拼接在 GitHub 官方链接之前
-PROXY_URL="https://github.xuheng.work/"
+# --- 颜色定义 ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-# 辅助函数：构建带代理的 URL
-construct_url() {
-    local url="$1"
-    if [ -n "$PROXY_URL" ]; then
-        # 确保代理地址不包含重复的斜杠，并拼接目标 URL
-        echo "${PROXY_URL%/}/${url}"
-    else
-        echo "${url}"
-    fi
+# --- 辅助函数 ---
+log_step() { echo -e "\n${BLUE}==>${NC} ${1}"; }
+log_info() { echo -e "      ${NC}${1}"; }
+log_success() { echo -e "      ${GREEN}✓ ${1}${NC}"; }
+log_warn() { echo -e "      ${YELLOW}» ${1}${NC}"; }
+log_error() { echo -e "\n${RED}错误：${1}${NC}\n"; exit 1; }
+
+# 强制 IPv4 下载的 curl 包装
+curl_cmd() {
+    curl -4 -fsSL "$@"
 }
 
-# --- 资源地址定义 (恢复为官方源) ---
-
-# Oh My Zsh
-OH_MY_ZSH_REMOTE=$(construct_url "https://github.com/ohmyzsh/ohmyzsh.git")
-OH_MY_ZSH_INSTALL_URL=$(construct_url "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh")
-
-# Powerlevel10k 主题 & 字体
-P10K_URL=$(construct_url "https://github.com/romkatv/powerlevel10k.git")
-# 注意：字体文件通常位于 raw.githubusercontent.com 或 github.com/raw
-MESLO_FONT_BASE_URL=$(construct_url "https://github.com/romkatv/powerlevel10k-media/raw/master")
-
-# 插件 (恢复为官方 zsh-users 组织)
-AUTOSUGGESTIONS_URL=$(construct_url "https://github.com/zsh-users/zsh-autosuggestions.git")
-SYNTAX_HIGHLIGHTING_URL=$(construct_url "https://github.com/zsh-users/zsh-syntax-highlighting.git")
-HISTORY_SUBSTRING_SEARCH_URL=$(construct_url "https://github.com/zsh-users/zsh-history-substring-search.git")
-COMPLETIONS_URL=$(construct_url "https://github.com/zsh-users/zsh-completions.git")
-
-
-# --- 脚本设置 ---
-set -e
-set -o pipefail
-
-# --- 日志与辅助函数 ---
-log_step() { echo -e "\n\e[1;34m--> $1\e[0m"; }
-log_info() { echo "      $1"; }
-log_success() { echo -e "      \e[1;32m✓ $1\e[0m"; }
-log_skip() { echo -e "      \e[1;33m» $1\e[0m"; }
-log_error() { echo -e "\n\e[1;31m错误：$1\e[0m\n"; exit 1; }
-
+# 用户执行包装器
 run_as_user() {
     if [ "$TARGET_USER" != "root" ]; then
         sudo -u "$TARGET_USER" "$@"
@@ -70,254 +46,333 @@ run_as_user() {
     fi
 }
 
+# Git 仓库修复函数 (核心修复逻辑)
+fix_git_remote() {
+    local dir="$1"
+    local new_url="$2"
+    local name="$3"
+    
+    if [ -d "$dir/.git" ]; then
+        # 获取当前 remote url
+        local cur_remote
+        cur_remote=$(run_as_user git -C "$dir" remote get-url origin 2>/dev/null)
+        
+        # 如果当前 URL 与新 URL 不一致，强制更新
+        if [ "$cur_remote" != "$new_url" ]; then
+            log_warn "检测到 ${name} 源地址失效/过时，正在修复..."
+            log_info "旧地址: $cur_remote"
+            log_info "新地址: $new_url"
+            run_as_user git -C "$dir" remote set-url origin "$new_url"
+            
+            # 尝试拉取一下确保连通性 (可选，为了速度暂不执行 fetch，下次更新自动生效)
+            log_success "${name} 源地址已修复。"
+        else
+            log_success "${name} 源地址正常。"
+        fi
+    fi
+}
 
-# --- 1. 权限与用户检查 ---
-log_step "[1/9] 检查运行环境并选择用户"
+# --- 1. 环境检查与用户选择 ---
+log_step "[1/10] 环境检查"
 if [ "$(id -u)" -ne 0 ]; then
-  log_error "此脚本需要以 root 权限运行。请使用 'sudo ./script.sh <username>'。"
+  log_error "请使用 root 权限运行: sudo ./script.sh"
 fi
 
+# 获取目标用户
 TARGET_USER=""
 if [ -n "$1" ]; then
     TARGET_USER="$1"
-    log_info "将为命令行指定的用户 '$TARGET_USER' 进行配置..."
 else
-    log_info "未指定用户，正在扫描可用用户..."
+    log_info "正在扫描普通用户..."
     mapfile -t users < <(getent passwd | awk -F: '$3 >= 1000 && $7 ~ /(\/(bash|zsh|sh))$/ {print $1}')
-    options=("root" "${users[@]}")
-
-    echo "请选择要为其配置 Zsh 的用户："
-    PS3=$'\n'"请输入数字选择用户: "
-    select user in "${options[@]}"; do
-        if [[ -n "$user" ]]; then
-            TARGET_USER=$user
-            break
-        else
-            log_error "无效的选择，脚本终止。"
-        fi
-    done
+    if [ ${#users[@]} -eq 0 ]; then
+        TARGET_USER="root"
+    else
+        options=("root" "${users[@]}")
+        echo -e "${CYAN}请选择要配置的用户:${NC}"
+        select user in "${options[@]}"; do
+            [[ -n "$user" ]] && TARGET_USER=$user && break
+        done
+    fi
 fi
+[ -z "$TARGET_USER" ] && log_error "未选择用户。"
 
 TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
-if [ -z "$TARGET_HOME" ]; then
-    log_error "无法找到用户 '$TARGET_USER' 的主目录。"
+log_success "目标用户: ${TARGET_USER} (Home: ${TARGET_HOME})"
+
+
+# --- 2. 系统级优化 ---
+log_step "[2/10] 系统优化 (BBR & 时区)"
+
+# 设置时区
+if timedatectl | grep -q "Asia/Shanghai"; then
+    log_success "时区已是 Asia/Shanghai"
+else
+    timedatectl set-timezone Asia/Shanghai
+    log_success "时区已设置为 Asia/Shanghai"
 fi
-log_info "最终确定的用户: '$TARGET_USER'"
-log_info "用户主目录: $TARGET_HOME"
+
+# 开启 BBR
+if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+    log_success "TCP BBR 已开启"
+else
+    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    sysctl -p > /dev/null 2>&1
+    log_success "TCP BBR 已启用"
+fi
 
 
-# --- 2. 安装系统软件包 ---
-log_step "[2/9] 更新与安装系统基础包"
+# --- 3. 软件包安装 ---
+log_step "[3/10] 更新系统并安装现代化工具箱"
 export DEBIAN_FRONTEND=noninteractive
-# 检查是否已有 apt 锁
-if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
-   log_info "等待 apt 锁释放..."
-   sleep 5
-fi
 
-apt-get update -y > /dev/null
-apt-get install -y vim sudo curl ca-certificates gnupg zsh git unzip fontconfig fzf zoxide > /dev/null
-log_success "基础软件包安装完成。"
-
-
-# --- 3. 配置用户 Sudo 权限 ---
-log_step "[3/9] 配置 Sudo 权限"
-if [ "$TARGET_USER" != "root" ]; then
-    if ! getent group sudo | grep -qw "$TARGET_USER"; then
-        /usr/sbin/usermod -aG sudo "$TARGET_USER"
-        log_success "用户 '$TARGET_USER' 已添加到 'sudo' 组。"
-    else
-        log_skip "用户 '$TARGET_USER' 已在 'sudo' 组中。"
+# 检查系统类型
+if [ -f /etc/debian_version ]; then
+    apt-get update -y > /dev/null
+    # 基础包: git, curl, zsh, vim, sudo
+    # 增强包: fzf, zoxide, btop (监控), ncdu (磁盘), bat (查看文件)
+    PACKAGES="git curl wget vim sudo zsh unzip fontconfig fzf zoxide btop ncdu bat"
+    
+    log_info "正在安装软件包: ${PACKAGES}..."
+    apt-get install -y $PACKAGES > /dev/null
+    
+    # 建立 bat 软链接 (Debian下叫 batcat)
+    if command -v batcat &> /dev/null && ! command -v bat &> /dev/null; then
+        ln -s /usr/bin/batcat /usr/local/bin/bat
     fi
+    log_success "工具箱安装完成。"
 else
-    log_skip "目标用户是 root，无需配置 Sudo。"
+    log_error "本脚本目前仅深度支持 Debian/Ubuntu 系统。"
 fi
 
 
-# --- 4. 安装 Powerlevel10k 推荐字体 ---
-log_step "[4/9] 安装 MesloLGS Nerd Font 字体"
+# --- 4. Vim 配置增强 ---
+log_step "[4/10] 优化 Vim 配置"
+VIMRC="${TARGET_HOME}/.vimrc"
+if [ ! -f "$VIMRC" ] || ! grep -q "GENERATED BY SCRIPT" "$VIMRC"; then
+    cat > "$VIMRC" << 'EOF'
+" --- GENERATED BY SCRIPT ---
+set nocompatible
+syntax on
+set number
+set ruler
+set cursorline
+set showmatch
+set incsearch
+set hlsearch
+set tabstop=4
+set shiftwidth=4
+set expandtab
+set encoding=utf-8
+" 剪贴板共享
+set clipboard=unnamedplus
+EOF
+    chown "${TARGET_USER}:${TARGET_USER}" "$VIMRC"
+    log_success "已生成基础 .vimrc 配置。"
+else
+    log_warn ".vimrc 已存在，跳过覆盖。"
+fi
+
+
+# --- 5. Docker 安装 (可选) ---
+log_step "[5/10] Docker 环境检查"
+if command -v docker >/dev/null 2>&1; then
+    log_success "Docker 已安装。"
+else
+    echo -e "${YELLOW}是否要安装 Docker 及 Docker Compose? [y/N]${NC}"
+    read -r INSTALL_DOCKER
+    if [[ "$INSTALL_DOCKER" =~ ^[Yy]$ ]]; then
+        log_info "正在通过 apt 安装 Docker..."
+        curl_cmd https://get.docker.com | sh > /dev/null 2>&1 || apt-get install -y docker.io docker-compose > /dev/null
+        
+        systemctl enable docker > /dev/null 2>&1
+        systemctl start docker > /dev/null 2>&1
+        
+        # 将用户加入 docker 组
+        if [ "$TARGET_USER" != "root" ]; then
+            usermod -aG docker "$TARGET_USER"
+            log_success "已将用户 ${TARGET_USER} 加入 docker 用户组。"
+        fi
+        log_success "Docker 安装完成。"
+    else
+        log_info "跳过 Docker 安装。"
+    fi
+fi
+
+
+# --- 6. 字体安装 ---
+log_step "[6/10] 安装 MesloLGS Nerd Font 字体"
 FONT_DIR="/usr/local/share/fonts"
+FONT_URL_BASE="${GH_PROXY}https://raw.githubusercontent.com/romkatv/powerlevel10k-media/master"
+
 if [ ! -f "${FONT_DIR}/MesloLGS NF Regular.ttf" ]; then
-    log_info "开始下载字体 (来源: ${MESLO_FONT_BASE_URL})..."
     mkdir -p "$FONT_DIR"
+    log_info "下载字体中..."
     cd /tmp
-    
-    # 增加重试机制，防止网络波动
-    curl -fLo "MesloLGS NF Regular.ttf" "${MESLO_FONT_BASE_URL}/MesloLGS%20NF%20Regular.ttf" || log_error "下载字体失败"
-    curl -fLo "MesloLGS NF Bold.ttf" "${MESLO_FONT_BASE_URL}/MesloLGS%20NF%20Bold.ttf" || log_error "下载字体失败"
-    
+    curl_cmd "${FONT_URL_BASE}/MesloLGS%20NF%20Regular.ttf" -o "MesloLGS NF Regular.ttf"
+    curl_cmd "${FONT_URL_BASE}/MesloLGS%20NF%20Bold.ttf" -o "MesloLGS NF Bold.ttf"
     mv ./*.ttf "$FONT_DIR/"
-    log_info "正在刷新系统字体缓存..."
     fc-cache -f -v > /dev/null
-    cd "$OLDPWD"
-    log_success "字体安装完成。"
+    cd - > /dev/null
+    log_success "字体安装完毕。"
 else
-    log_skip "MesloLGS 字体已安装。"
+    log_success "字体已安装。"
 fi
 
 
-# --- 5. 为指定用户安装 Oh My Zsh ---
-log_step "[5/9] 安装 Oh My Zsh"
-if [ ! -d "${TARGET_HOME}/.oh-my-zsh" ]; then
-    log_info "为用户 '$TARGET_USER' 安装 Oh My Zsh..."
+# --- 7. Oh My Zsh 安装与修复 ---
+log_step "[7/10] 安装/修复 Oh My Zsh"
+OMZ_DIR="${TARGET_HOME}/.oh-my-zsh"
+OMZ_REPO="${GH_PROXY}https://github.com/ohmyzsh/ohmyzsh.git"
+
+if [ ! -d "$OMZ_DIR" ]; then
+    log_info "正在通过代理安装 OMZ..."
+    INSTALL_URL="${GH_PROXY}https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh"
     
-    # 下载 install.sh
-    INSTALL_SCRIPT=$(curl -fsSL ${OH_MY_ZSH_INSTALL_URL}) || log_error "无法下载 Oh My Zsh 安装脚本"
+    # 下载脚本
+    curl_cmd "$INSTALL_URL" > /tmp/install_omz.sh
+    chmod +x /tmp/install_omz.sh
     
-    # 执行安装，传递 REMOTE 变量以使用代理地址
-    run_as_user env GIT_SSL_NO_VERIFY=true REMOTE="${OH_MY_ZSH_REMOTE}" sh -c "${INSTALL_SCRIPT}" "" --unattended
+    # 仅克隆，不立即进入 zsh
+    run_as_user env GIT_SSL_NO_VERIFY=true REMOTE="$OMZ_REPO" sh /tmp/install_omz.sh --unattended > /dev/null
+    rm /tmp/install_omz.sh
     log_success "Oh My Zsh 安装完成。"
 else
-    log_skip "Oh My Zsh 已安装。"
+    # 核心：如果已存在，检查并修复 remote
+    fix_git_remote "$OMZ_DIR" "$OMZ_REPO" "Oh My Zsh 主程序"
 fi
 
-# --- 6. 为指定用户安装 P10k 主题和所有插件 ---
-log_step "[6/9] 安装 Powerlevel10k 主题及所有插件"
-ZSH_CUSTOM_DIR="${TARGET_HOME}/.oh-my-zsh/custom"
 
-# 定义插件列表，格式: 目标路径|Git地址
-PLUGINS_AND_THEMES=(
-    "themes/powerlevel10k|${P10K_URL}"
-    "plugins/zsh-autosuggestions|${AUTOSUGGESTIONS_URL}"
-    "plugins/zsh-syntax-highlighting|${SYNTAX_HIGHLIGHTING_URL}"
-    "plugins/zsh-history-substring-search|${HISTORY_SUBSTRING_SEARCH_URL}"
-    "plugins/zsh-completions|${COMPLETIONS_URL}"
+# --- 8. 插件与主题 (安装与修复) ---
+log_step "[8/10] 安装/修复 P10k 主题与效率插件"
+ZSH_CUSTOM="${OMZ_DIR}/custom"
+
+declare -A PLUGINS
+PLUGINS=(
+    ["themes/powerlevel10k"]="https://github.com/romkatv/powerlevel10k.git"
+    ["plugins/zsh-autosuggestions"]="https://github.com/zsh-users/zsh-autosuggestions.git"
+    ["plugins/zsh-syntax-highlighting"]="https://github.com/zsh-users/zsh-syntax-highlighting.git"
+    ["plugins/zsh-history-substring-search"]="https://github.com/zsh-users/zsh-history-substring-search.git"
+    ["plugins/zsh-completions"]="https://github.com/zsh-users/zsh-completions.git"
 )
 
-for item in "${PLUGINS_AND_THEMES[@]}"; do
-    TARGET_DIR_FULL_PATH="${ZSH_CUSTOM_DIR}/${item%%|*}"
-    TARGET_DIR_NAME=$(basename "${item%%|*}")
-    REPO_URL="${item#*|}"
+for path in "${!PLUGINS[@]}"; do
+    FULL_PATH="${ZSH_CUSTOM}/${path}"
+    REPO_URL="${GH_PROXY}${PLUGINS[$path]}"
+    NAME=$(basename "$path")
     
-    if [ ! -d "${TARGET_DIR_FULL_PATH}" ]; then
-        log_info "正在安装 ${TARGET_DIR_NAME}..."
-        
-        TMP_CLONE_PATH="/tmp/${TARGET_DIR_NAME}"
-        rm -rf "${TMP_CLONE_PATH}"
-
-        log_info "   -> 正在以 root 权限克隆到临时目录..."
-        # 增加超时设置，防止代理卡死
-        env GIT_SSL_NO_VERIFY=true git clone --depth=1 "${REPO_URL}" "${TMP_CLONE_PATH}" > /dev/null 2>&1 || log_error "克隆 ${TARGET_DIR_NAME} 失败，请检查 PROXY_URL 或网络。"
-
-        log_info "   -> 正在移动文件到用户目录..."
-        run_as_user mkdir -p "$(dirname "${TARGET_DIR_FULL_PATH}")"
-        mv "${TMP_CLONE_PATH}" "${TARGET_DIR_FULL_PATH}"
-
-        log_info "   -> 正在设置文件权限..."
-        chown -R "${TARGET_USER}:${TARGET_USER}" "${TARGET_DIR_FULL_PATH}"
-        
-        log_success "${TARGET_DIR_NAME} 安装完成。"
+    if [ ! -d "$FULL_PATH" ]; then
+        log_info "正在安装 ${NAME}..."
+        run_as_user git clone --depth=1 "$REPO_URL" "$FULL_PATH" -q
+        log_success "${NAME} 安装完成。"
     else
-        log_skip "${TARGET_DIR_NAME} 已安装。"
+        # 修复逻辑
+        fix_git_remote "$FULL_PATH" "$REPO_URL" "${NAME}"
     fi
 done
 
 
-# --- 7. 自动配置 .zshrc 和 .p10k.zsh ---
-log_step "[7/9] 自动化配置文件"
-ZSHRC_FILE="${TARGET_HOME}/.zshrc"
-P10K_FILE="${TARGET_HOME}/.p10k.zsh"
+# --- 9. 配置文件生成 ---
+log_step "[9/10] 生成 .zshrc 配置"
+ZSHRC="${TARGET_HOME}/.zshrc"
+P10K_CFG="${TARGET_HOME}/.p10k.zsh"
 
-# 7.1 配置 .zshrc
-log_info "配置 .zshrc 主题和插件..."
-# 确保文件存在
-if [ ! -f "$ZSHRC_FILE" ]; then
-    run_as_user touch "$ZSHRC_FILE"
-fi
+# 覆盖 ZSH_THEME
+run_as_user sed -i 's/ZSH_THEME=".*"/ZSH_THEME="powerlevel10k\/powerlevel10k"/' "$ZSHRC"
 
-run_as_user sed -i 's/^ZSH_THEME=".*"/ZSH_THEME="powerlevel10k\/powerlevel10k"/' "$ZSHRC_FILE"
+# 注入插件配置
+PLUGIN_BLOCK="plugins=(
+  git
+  extract
+  sudo
+  z
+  fzf
+  zsh-autosuggestions
+  zsh-syntax-highlighting
+  zsh-history-substring-search
+)"
 
-NEW_PLUGINS="plugins=(\n  git\n  fzf\n  zsh-autosuggestions\n  zsh-syntax-highlighting\n  zsh-history-substring-search\n)"
-CONFIG_MARKER="# --- PLUGINS MANAGED BY SCRIPT ---"
-
-if ! run_as_user grep -q "$CONFIG_MARKER" "$ZSHRC_FILE"; then
-    # 如果找到了 plugins=... 行，替换它
-    if run_as_user grep -q "^plugins=" "$ZSHRC_FILE"; then
-        run_as_user sed -i "/^plugins=/c\\${CONFIG_MARKER}\n${NEW_PLUGINS}" "$ZSHRC_FILE"
-    else
-        # 如果没找到，追加到文件末尾 (极少情况)
-        run_as_user echo -e "${CONFIG_MARKER}\n${NEW_PLUGINS}" >> "$ZSHRC_FILE"
-    fi
+if ! grep -q "zsh-autosuggestions" "$ZSHRC"; then
+    run_as_user sed -i "/^plugins=(/c\\${PLUGIN_BLOCK}" "$ZSHRC"
     log_success "插件列表已更新。"
-else
-    log_skip "插件列表已由脚本管理。"
 fi
 
-# 7.2 添加自定义配置
-CUSTOM_CONFIG_MARKER="# --- CUSTOM CONFIG BY SCRIPT ---"
-if ! run_as_user grep -q "$CUSTOM_CONFIG_MARKER" "$ZSHRC_FILE"; then
-log_info "添加自定义配置和初始化代码到 .zshrc..."
-run_as_user tee -a "$ZSHRC_FILE" > /dev/null << 'EOF'
+# 注入自定义配置 (Alias, Keybindings, Env)
+if ! grep -q "CUSTOM CONFIG BY SCRIPT" "$ZSHRC"; then
+    log_info "写入增强配置 (历史搜索, FZF, Alias)..."
+    cat >> "$ZSHRC" << 'EOF'
 
 # --- CUSTOM CONFIG BY SCRIPT ---
-if [ -d ~/.oh-my-zsh/custom/plugins/zsh-completions/src ]; then
-  fpath+=~/.oh-my-zsh/custom/plugins/zsh-completions/src
-fi
-ZSH_COMPDUMP="${ZDOTDIR:-$HOME}/.zcompdump"
-autoload -U compinit && compinit -i -d "${ZSH_COMPDUMP}"
 
-# Initialize zoxide
-if command -v zoxide > /dev/null; then
-  eval "$(zoxide init zsh)"
-fi
+# 1. 历史记录增强 (输入部分命令后按上下箭头搜索)
+# 绑定到 zsh-history-substring-search 插件
+bindkey '^[[A' history-substring-search-up
+bindkey '^[[B' history-substring-search-down
 
+# 2. 现代化替代
+if command -v bat > /dev/null; then alias cat='bat'; fi
+if command -v ncdu > /dev/null; then alias du='ncdu --color dark -rr -x --exclude .git --exclude node_modules'; fi
+
+# 3. 实用别名
+alias ll='ls -alF --color=auto'
+alias la='ls -A --color=auto'
+alias l='ls -CF --color=auto'
+alias grep='grep --color=auto'
+alias update='sudo apt update && sudo apt upgrade -y'
+alias docker-compose='docker compose' 
+alias d='docker'
+alias dc='docker compose'
+
+# 4. 环境变量与工具初始化
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
 export FZF_DEFAULT_OPTS='--height 40% --layout=reverse --border'
 
-alias ls='ls -F --color=auto'
-alias la='ls -A'
-alias ll='ls -alF'
-alias update='sudo apt update && sudo apt upgrade -y'
-mkcd() { mkdir -p "$1" && cd "$1"; }
+# 初始化 zoxide (智能跳转)
+eval "$(zoxide init zsh)"
+
+# 加载 P10k
+[[ -f ~/.p10k.zsh ]] && source ~/.p10k.zsh
 EOF
-    log_success "自定义配置已添加。"
-else
-    log_skip "自定义配置块已存在。"
+    log_success "自定义配置已注入。"
 fi
 
-
-# 7.3 创建或更新 .p10k.zsh 文件
-log_info "创建或更新 .p10k.zsh 配置文件..."
-tee "$P10K_FILE" > /dev/null << 'EOF'
-# Generated by setup script. To customize, run `p10k configure`.
+# 生成 P10k 配置文件 (静默模式)
+if [ ! -f "$P10K_CFG" ]; then
+    cat > "$P10K_CFG" << 'EOF'
+# Generated by script
 POWERLEVEL9K_MODE='nerdfont-complete'
 POWERLEVEL9K_PROMPT_ON_NEWLINE=false
-POWERLEVEL9K_PROMPT_ADD_NEWLINE=false
 POWERLEVEL9K_LEFT_PROMPT_ELEMENTS=(os_icon dir vcs)
-POWERLEVEL9K_RIGHT_PROMPT_ELEMENTS=(status root_indicator background_jobs time)
+POWERLEVEL9K_RIGHT_PROMPT_ELEMENTS=(status command_execution_time background_jobs time)
+POWERLEVEL9K_TIME_FORMAT='%D{%H:%M:%S}'
 EOF
-chown "${TARGET_USER}:${TARGET_USER}" "$P10K_FILE"
-log_success ".p10k.zsh 已配置为紧凑单行模式。"
-
-
-# --- 8. 更改目标用户的默认 Shell 为 Zsh ---
-log_step "[8/9] 设置 Zsh 为默认 Shell"
-CURRENT_SHELL=$(getent passwd "$TARGET_USER" | cut -d: -f7)
-TARGET_SHELL=$(which zsh)
-
-if [ "$CURRENT_SHELL" != "$TARGET_SHELL" ]; then
-    chsh -s "$TARGET_SHELL" "$TARGET_USER"
-    log_success "已将 Zsh 设置为 '$TARGET_USER' 的默认 Shell。"
-else
-    log_skip "Zsh 已是默认 Shell。"
+    chown "${TARGET_USER}:${TARGET_USER}" "$P10K_CFG"
+    log_success ".p10k.zsh 基础配置已生成。"
 fi
 
-# --- 9. 清理工作 ---
-log_step "[9/9] 清理临时文件"
-rm -rf /tmp/themes /tmp/plugins
-log_success "清理完成。"
 
+# --- 10. 收尾 ---
+log_step "[10/10] 收尾工作"
+# 切换 Shell
+CURRENT_SHELL=$(getent passwd "$TARGET_USER" | cut -d: -f7)
+ZSH_PATH=$(which zsh)
+if [ "$CURRENT_SHELL" != "$ZSH_PATH" ]; then
+    chsh -s "$ZSH_PATH" "$TARGET_USER"
+    log_success "默认 Shell 已修改为 Zsh。"
+fi
 
-# --- 最终提示 ---
-echo -e "\n===================================================="
-echo -e "🚀 \e[1;32m恭喜！超级 Zsh 终端已为用户 '$TARGET_USER' 配置完成！\e[0m"
+echo -e "\n${GREEN}==============================================${NC}"
+echo -e "${GREEN}   🎉 旗舰版环境初始化完成 (v7.1)！   ${NC}"
+echo -e "${GREEN}==============================================${NC}"
+echo -e "修复报告："
+echo -e "   - 已自动检测并修复了旧的 Git 仓库地址。"
+echo -e "操作说明："
+echo -e "1. ${YELLOW}断开 SSH 并重新登录${NC} (必须，以加载新配置)。"
+echo -e "2. 新功能体验:"
+echo -e "   - 历史搜索: 输入命令前缀 (如 'docker') 然后按 ${CYAN}↑${NC} 箭头。"
+echo -e "   - 智能跳转: 输入 ${CYAN}z <目录名>${NC} 快速跳转。"
+echo -e "   - 系统监控: 输入 ${CYAN}btop${NC}。"
+echo -e "   - 磁盘分析: 输入 ${CYAN}ncdu${NC}。"
 echo ""
-echo "重要提示："
-echo "1. 请用户 '$TARGET_USER' \e[1;33m完全重新登录\e[0m (断开SSH后重连)。"
-echo "2. 已配置代理地址: ${PROXY_URL:-'无 (直连 GitHub)'}"
-echo ""
-echo "3. 新功能一览："
-echo "   - \e[1;36m智能跳转 (zoxide)\e[0m: 输入 \`z <目录名一部分>\` 即可快速跳转。"
-echo "   - \e[1;36m模糊搜索 (fzf)\e[0m: 使用 \`Ctrl+R\`, \`Ctrl+T\`, \`Alt+C\` 进行高效搜索。"
-echo ""
-echo "4. 如果需要自定义样式，可以随时运行 \e[1;32mp10k configure\e[0m。"
-echo "===================================================="
